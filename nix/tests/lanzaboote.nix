@@ -3,7 +3,7 @@
 }:
 
 let
-  inherit (pkgs) lib system;
+  inherit (pkgs) lib system runCommand;
   defaultTimeout = 5 * 60; # = 5 minutes
 
   mkSecureBootTest = { name, machine ? { }, useSecureBoot ? true, useTPM2 ? false, readEfiVariables ? false, testScript }:
@@ -85,6 +85,21 @@ let
       testScript = ''
         ${lib.optionalString useTPM2 tpm2Initialization}
         ${lib.optionalString readEfiVariables efiVariablesHelpers}
+        machine.start()
+        if machine.qmp_client is None:
+          import sys; sys.exit(1)
+        # We expect a shutdown for guest-reset reasons.
+        while True:
+          try:
+            event = next(machine.qmp_client.events())
+            print(event)
+          except:
+            continue
+          if event['event'] == 'SHUTDOWN' and event.get('data', {}).get('reason') == 'guest-reset':
+            break
+        print('Shutdown detected.')
+        machine.booted = False
+        machine.start()
         ${testScript}
       '';
 
@@ -144,7 +159,30 @@ let
         };
         boot.lanzaboote = {
           enable = true;
-          enrollKeys = lib.mkDefault true;
+          safeAutoEnroll =
+            let
+              signVariable = varName:
+                let
+                  GUID = ./fixtures/uefi-keys/GUID;
+                  publicKey = ./fixtures/uefi-keys/keys/${varName}/${varName}.pem;
+                  privateKey = ./fixtures/uefi-keys/keys/${varName}/${varName}.key;
+                in
+                runCommand "sign-${varName}-via-snakeoil-pki"
+                  {
+                    nativeBuildInputs = [ pkgs.efitools ];
+                  } ''
+                  cert-to-efi-sig-list -g ${GUID} ${publicKey} ${varName}.esl
+                  sign-efi-sig-list -t "$(date --date '@1' '+%Y-%m-%d %H:%M:%S')" \
+                    -k ${privateKey} -c ${publicKey} ${varName} ${varName}.esl ${varName}.auth
+
+                  mv ${varName}.auth $out
+                '';
+            in
+            {
+              db = signVariable "db";
+              KEK = signVariable "KEK";
+              PK = signVariable "PK";
+            };
           pkiBundle = ./fixtures/uefi-keys;
         };
       };
@@ -197,7 +235,6 @@ in
   basic = mkSecureBootTest {
     name = "lanzaboote";
     testScript = ''
-      machine.start()
       assert "Secure Boot: enabled (user)" in machine.succeed("bootctl status")
     '';
   };
@@ -208,7 +245,6 @@ in
       boot.initrd.systemd.enable = true;
     };
     testScript = ''
-      machine.start()
       assert "Secure Boot: enabled (user)" in machine.succeed("bootctl status")
     '';
   };
@@ -231,7 +267,6 @@ in
         '';
       };
       testScript = ''
-        machine.start()
         machine.wait_for_unit("multi-user.target")
 
         machine.succeed("cmp ${secret} /secret-from-initramfs")
@@ -273,7 +308,6 @@ in
         };
       };
       testScript = ''
-        machine.start()
         machine.wait_for_unit("multi-user.target")
 
         # Assert that only three boot files exists (a single kernel and a two
@@ -323,7 +357,6 @@ in
       };
     };
     testScript = ''
-      machine.start()
       print(machine.succeed("ls -lah /boot/EFI/Linux"))
       # TODO: make it more reliable to find this filename, i.e. read it from somewhere?
       machine.succeed("bootctl set-default nixos-generation-1-specialisation-variant-\*.efi")
@@ -344,7 +377,6 @@ in
       boot.bootspec.enable = lib.mkForce false;
     };
     testScript = ''
-      machine.start()
       assert "Secure Boot: enabled (user)" in machine.succeed("bootctl status")
     '';
   };
@@ -356,8 +388,6 @@ in
       boot.loader.systemd-boot.consoleMode = "auto";
     };
     testScript = ''
-      machine.start()
-
       actual_loader_config = machine.succeed("cat /boot/loader/loader.conf").split("\n")
       expected_loader_config = ["timeout 0", "console-mode auto"]
       
@@ -378,8 +408,6 @@ in
       # Finally, we will reboot.
       # We will also assert that systemd-boot is not running
       # by checking for the sd-boot's specific EFI variables.
-      machine.start()
-
       # By construction, nixos-generation-1.efi is the stub we are interested in.
       # TODO: this should work -- machine.succeed("efibootmgr -d /dev/vda -c -l \\EFI\\Linux\\nixos-generation-1.efi") -- efivars are not persisted
       # across reboots atm?
@@ -432,8 +460,6 @@ in
     useTPM2 = true;
     readEfiVariables = true;
     testScript = ''
-      machine.start()
-
       # TODO: the other variables are not yet supported.
       expected_variables = [
         "StubPcrKernelImage"

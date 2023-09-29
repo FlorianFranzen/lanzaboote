@@ -105,8 +105,8 @@
         "type": "github"
       },
       "original": {
-        "owner": "NixOS",
-        "ref": "nixos-unstable-small",
+        "owner": "RaitoBezarius",
+        "ref": "lzbt-needs",
         "repo": "nixpkgs",
         "type": "github"
       }
