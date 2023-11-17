@@ -22,6 +22,12 @@ in
 
     enrollKeys = mkEnableOption "Automatic enrollment of the keys using sbctl";
 
+    extraEfiSysMountPoints = mkOption {
+      type = types.listOf types.str;
+      default = [];
+      description = "Additional EFI mount points to which install boot files";
+    };
+
     configurationLimit = mkOption {
       default = config.boot.loader.systemd-boot.configurationLimit;
       example = 120;
@@ -103,14 +109,18 @@ in
           ${sbctlWithPki}/bin/sbctl enroll-keys --yes-this-might-brick-my-machine
         ''}
 
-        ${cfg.package}/bin/lzbt install \
-          --systemd ${config.systemd.package} \
-          --systemd-boot-loader-config ${loaderConfigFile} \
-          --public-key ${cfg.publicKeyFile} \
-          --private-key ${cfg.privateKeyFile} \
-          --configuration-limit ${toString configurationLimit} \
-          ${config.boot.loader.efi.efiSysMountPoint} \
-          /nix/var/nix/profiles/system-*-link
+        ${lib.concatMapStrings (mountPoint: ''
+          ${cfg.package}/bin/lzbt install \
+            --systemd ${config.systemd.package} \
+            --systemd-boot-loader-config ${loaderConfigFile} \
+            --public-key ${cfg.publicKeyFile} \
+            --private-key ${cfg.privateKeyFile} \
+            --configuration-limit ${toString configurationLimit} \
+            ${mountPoint} \
+            /nix/var/nix/profiles/system-*-link
+          '')
+          ([ config.boot.loader.efi.efiSysMountPoint ] ++ cfg.extraEfiSysMountPoints)
+        }
       '';
     };
 
